@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-iMac Security System v1.1.0
-Revision 49
+iMac Security System v1.0.0
+Revision 48
 A comprehensive security camera system with motion and voice detection
-Added SSH command functionality for remote control
 """
 
 import os
@@ -12,23 +11,14 @@ import time
 import threading
 import subprocess
 import json
-import argparse
-import logging
 import tkinter as tk
-from datetime import datetime
 from tkinter import ttk
 from tkinter import messagebox, filedialog
 
-# Set up logging first
+# Set filename for output redirection
 log_file = os.path.expanduser("~/Library/Logs/iMacSecuritySystem.log")
-logging.basicConfig(
-    filename=log_file,
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('iMacSecuritySystem')
 
-# Original stderr redirection
+# Redirect stderr to hide OpenCV errors
 if not sys.warnoptions:
     # Save original stderr
     original_stderr = sys.stderr
@@ -42,19 +32,8 @@ if not sys.warnoptions:
 
 # Check if running on macOS
 if not sys.platform.startswith('darwin'):
-    print("Platform Error: This application is designed for macOS only.")
+    messagebox.showerror("Platform Error", "This application is designed for macOS only.")
     sys.exit(1)
-
-# Parse command-line arguments
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='iMac Security System')
-    parser.add_argument('--headless', action='store_true', help='Run in headless mode (no GUI)')
-    parser.add_argument('--start-monitoring', action='store_true', help='Start monitoring immediately')
-    parser.add_argument('--stop-monitoring', action='store_true', help='Stop monitoring')
-    parser.add_argument('--duration', type=int, default=0, help='Duration to monitor in minutes (0 for indefinite)')
-    parser.add_argument('--config', type=str, help='Path to custom config file')
-    parser.add_argument('--status', action='store_true', help='Check monitoring status')
-    return parser.parse_args()
 
 # Try to import required modules
 try:
@@ -78,9 +57,11 @@ try:
         SUCCESS, DANGER, INFO, SECONDARY = "success", "danger", "info", "secondary"
         USE_TTKBOOTSTRAP = False
 except ImportError as e:
-    if 'tkinter' not in str(e).lower():  # Don't show error for tkinter when in headless mode
-        print(f"Missing dependency: {e}\n\nPlease run: pip install opencv-python numpy pyaudio SpeechRecognition Pillow ttkbootstrap")
-        sys.exit(1)
+    messagebox.showerror("Import Error", 
+                         f"Missing dependency: {e}\n\n"
+                         "Please run the installer script first:\n"
+                         "python3 install.py")
+    sys.exit(1)
 
 # Configuration manager
 class ConfigManager:
@@ -344,6 +325,7 @@ class CameraManager:
         if self.is_recording and frame is not None:
             self.video_writer.write(frame)
 
+
 # Audio and voice detection
 class AudioManager:
     def __init__(self, config):
@@ -478,232 +460,12 @@ class AudioManager:
             data = self.stream.read(1024, exception_on_overflow=False)
             self.frames.append(data)
 
-# Headless monitoring class for SSH/command-line control
-class HeadlessMonitor:
-    def __init__(self, config_manager):
-        self.config = config_manager.config
-        self.config_manager = config_manager
-        self.monitoring = False
-        self.stop_event = threading.Event()
-        self.camera_manager = None
-        self.audio_manager = None
-        
-    def initialize(self):
-        """Initialize camera and audio for headless monitoring"""
-        try:
-            self.camera_manager = CameraManager(self.config)
-            self.audio_manager = AudioManager(self.config)
-            
-            # Open camera and audio stream
-            if not self.camera_manager.open_camera():
-                logger.error("Failed to open camera")
-                return False
-                
-            if not self.audio_manager.start_stream():
-                logger.error("Failed to start audio stream")
-                return False
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error initializing headless monitoring: {e}")
-            return False
-    
-    def start_monitoring(self, duration=0):
-        """Start monitoring in headless mode
-        
-        Args:
-            duration: Duration in minutes (0 for indefinite)
-        """
-        if self.monitoring:
-            logger.info("Monitoring already active")
-            return True
-            
-        if not self.initialize():
-            logger.error("Failed to initialize headless monitoring")
-            return False
-            
-        self.monitoring = True
-        self.stop_event.clear()
-        
-        logger.info(f"Started headless monitoring at {datetime.now()}")
-        if duration > 0:
-            logger.info(f"Will monitor for {duration} minutes")
-            
-        # Start monitoring thread
-        monitoring_thread = threading.Thread(
-            target=self._monitoring_loop,
-            args=(duration,),
-            daemon=True
-        )
-        monitoring_thread.start()
-        
-        # Write a status file to indicate monitoring is active
-        self._write_status_file(True)
-        
-        return True
-        
-    def stop_monitoring(self):
-        """Stop monitoring in headless mode"""
-        if not self.monitoring:
-            logger.info("Monitoring not active")
-            return False
-            
-        logger.info("Stopping headless monitoring...")
-        self.monitoring = False
-        self.stop_event.set()
-        
-        # Stop any active recording
-        if self.camera_manager and self.camera_manager.is_recording:
-            self.camera_manager.stop_recording()
-            
-        if self.audio_manager and self.audio_manager.is_recording:
-            self.audio_manager.stop_recording()
-            
-        logger.info(f"Stopped headless monitoring at {datetime.now()}")
-        
-        # Update status file
-        self._write_status_file(False)
-        
-        return True
-        
-    def _monitoring_loop(self, duration):
-        """Main monitoring loop"""
-        start_time = time.time()
-        last_motion_time = 0
-        last_voice_time = 0
-        last_voice_check_time = 0
-        
-        try:
-            while self.monitoring and not self.stop_event.is_set():
-                # Check duration if specified
-                if duration > 0 and (time.time() - start_time) > duration * 60:
-                    logger.info(f"Monitoring duration of {duration} minutes reached")
-                    self.monitoring = False
-                    break
-                    
-                # Get frame from camera
-                frame = self.camera_manager.get_frame()
-                if frame is None:
-                    logger.warning("Failed to get camera frame")
-                    time.sleep(0.5)
-                    continue
-                    
-                # Check for motion
-                motion_detected = self.camera_manager.detect_motion(frame)
-                
-                # Check for voice (throttled)
-                voice_detected = False
-                current_time = time.time()
-                if current_time - last_voice_check_time > 0.3:
-                    voice_detected = self.audio_manager.detect_voice()
-                    last_voice_check_time = current_time
-                
-                # Handle detection events
-                if motion_detected:
-                    last_motion_time = time.time()
-                    self.camera_manager.motion_detected = True
-                    logger.info("Motion detected")
-                    
-                if voice_detected:
-                    last_voice_time = time.time()
-                    self.audio_manager.voice_detected = True
-                    logger.info("Voice detected")
-                    
-                # Handle recording
-                if (motion_detected or voice_detected) and not self.camera_manager.is_recording:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    video_file = self.camera_manager.start_recording()
-                    audio_file = self.audio_manager.start_recording()
-                    logger.info(f"Recording started at {timestamp}")
-                    
-                # Update recording state
-                if self.camera_manager.is_recording:
-                    # Check if we should continue recording
-                    if (self.camera_manager.motion_detected or self.audio_manager.voice_detected or 
-                            time.time() - max(last_motion_time, last_voice_time) < self.config["post_detection_record_time"]):
-                        # Keep recording
-                        self.camera_manager.record_frame(frame)
-                        self.audio_manager.record_audio()
-                        
-                        # Reset detection flags
-                        self.camera_manager.motion_detected = False
-                        self.audio_manager.voice_detected = False
-                    else:
-                        # Stop recording after timeout
-                        video_file = self.camera_manager.stop_recording()
-                        audio_file = self.audio_manager.stop_recording()
-                        logger.info(f"Recording stopped: {os.path.basename(video_file)}")
-                
-                # Sleep to reduce CPU usage
-                time.sleep(0.1)
-                
-        except Exception as e:
-            logger.error(f"Error in monitoring loop: {e}")
-        finally:
-            # Ensure cleanup happens
-            if self.camera_manager and self.camera_manager.is_recording:
-                self.camera_manager.stop_recording()
-                
-            if self.audio_manager and self.audio_manager.is_recording:
-                self.audio_manager.stop_recording()
-                
-            if self.camera_manager:
-                self.camera_manager.release_camera()
-                
-            if self.audio_manager:
-                self.audio_manager.terminate()
-                
-            self._write_status_file(False)
-                
-    def _write_status_file(self, is_active):
-        """Write a status file so other processes can check monitoring status"""
-        status_dir = os.path.expanduser("~/Library/Application Support/iMacSecuritySystem")
-        if not os.path.exists(status_dir):
-            os.makedirs(status_dir)
-            
-        status_file = os.path.join(status_dir, "monitoring_status.json")
-        status = {
-            "active": is_active,
-            "timestamp": datetime.now().isoformat(),
-            "pid": os.getpid()
-        }
-        
-        with open(status_file, 'w') as f:
-            json.dump(status, f, indent=4)
-            
-    @staticmethod
-    def check_status():
-        """Check if monitoring is currently active"""
-        status_file = os.path.expanduser("~/Library/Application Support/iMacSecuritySystem/monitoring_status.json")
-        
-        if not os.path.exists(status_file):
-            return {"active": False, "message": "Monitoring is not active"}
-            
-        try:
-            with open(status_file, 'r') as f:
-                status = json.load(f)
-                
-            # Verify if the process is still running
-            if status.get("active", False) and status.get("pid"):
-                try:
-                    # Check if process still exists (Unix-specific)
-                    os.kill(status["pid"], 0)
-                    return {"active": True, "since": status.get("timestamp", "unknown")}
-                except OSError:
-                    # Process not running
-                    return {"active": False, "message": "Process not running but status file exists"}
-                    
-            return {"active": status.get("active", False), "since": status.get("timestamp", "unknown")}
-        except Exception as e:
-            return {"active": False, "error": str(e)}
-
 
 # Main application
 class SecurityApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("iMac Security System v1.1.0 (Rev 49)")
+        self.root.title("iMac Security System v1.0.0 (Rev 48)")
         
         # Set window size and position to ensure settings are visible
         screen_width = root.winfo_screenwidth()
@@ -1306,9 +1068,6 @@ class SecurityApp:
             else:
                 self.start_stop_button.config(text="Stop Monitoring", style="Danger.TButton")
             self.status_var.set("Monitoring active - waiting for motion or voice")
-            
-            # Write status file for command-line tools
-            self._write_status_file(True)
         else:
             # Check if we're using ttkbootstrap for styling
             if USE_TTKBOOTSTRAP:
@@ -1322,25 +1081,6 @@ class SecurityApp:
                 self.camera_manager.stop_recording()
                 self.audio_manager.stop_recording()
                 self.refresh_recordings_list()
-                
-            # Update status file
-            self._write_status_file(False)
-                
-    def _write_status_file(self, is_active):
-        """Write a status file so other processes can check monitoring status"""
-        status_dir = os.path.expanduser("~/Library/Application Support/iMacSecuritySystem")
-        if not os.path.exists(status_dir):
-            os.makedirs(status_dir)
-            
-        status_file = os.path.join(status_dir, "monitoring_status.json")
-        status = {
-            "active": is_active,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "pid": os.getpid()
-        }
-        
-        with open(status_file, 'w') as f:
-            json.dump(status, f, indent=4)
                 
     def update_preview_size(self, *args):
         """Update the size of the preview container based on user selection"""
@@ -1509,93 +1249,17 @@ class SecurityApp:
         # Save settings
         self.config_manager.save_config()
         
-        # Update status file
-        self._write_status_file(False)
-        
         # Close application
         self.root.destroy()
 
 
-# Modified main entry point with command-line support
+# Modified main entry point with additional error handling
 if __name__ == "__main__":
-    # Parse command-line arguments
-    args = parse_arguments()
-    
-    # Create config manager (works without GUI)
-    config_manager = ConfigManager()
-    
-    # If custom config specified, load it
-    if args.config and os.path.exists(args.config):
-        try:
-            with open(args.config, 'r') as f:
-                custom_config = json.load(f)
-                config_manager.config.update(custom_config)
-        except Exception as e:
-            logger.error(f"Error loading custom config: {e}")
-    
-    # Handle headless commands
-    if args.status or args.stop_monitoring or args.headless or args.start_monitoring:
-        # Check status
-        if args.status:
-            status = HeadlessMonitor.check_status()
-            print(json.dumps(status, indent=2))
-            sys.exit(0)
-            
-        # Stop monitoring
-        if args.stop_monitoring:
-            status = HeadlessMonitor.check_status()
-            if status.get("active", False):
-                # Find the PID and send a signal
-                try:
-                    with open(os.path.expanduser("~/Library/Application Support/iMacSecuritySystem/monitoring_status.json"), 'r') as f:
-                        status_data = json.load(f)
-                        pid = status_data.get("pid")
-                        if pid:
-                            os.kill(pid, 15)  # SIGTERM
-                            print("Sent stop signal to monitoring process")
-                        else:
-                            print("No active monitoring process found")
-                except Exception as e:
-                    print(f"Error stopping monitoring: {e}")
-            else:
-                print("No active monitoring process found")
-            sys.exit(0)
-            
-        # Start monitoring in headless mode
-        if args.headless or args.start_monitoring:
-            # Check if already running
-            status = HeadlessMonitor.check_status()
-            if status.get("active", False):
-                print(f"Monitoring already active since {status.get('since', 'unknown')}")
-                sys.exit(0)
-                
-            print("Starting headless monitoring...")
-            monitor = HeadlessMonitor(config_manager)
-            monitor.start_monitoring(args.duration)
-            
-            # In headless mode, keep the process running
-            if args.headless:
-                try:
-                    while monitor.monitoring:
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    print("\nStopping monitoring...")
-                    monitor.stop_monitoring()
-            
-            sys.exit(0)
-    
-    # Normal GUI mode if we get here
     try:
         root = tk.Tk()
         app = SecurityApp(root)
-        
-        # Auto-start monitoring if requested from command line
-        if args.start_monitoring:
-            app.toggle_monitoring()
-            
         root.mainloop()
     except Exception as e:
-        logger.error(f"Error starting application: {e}")
         print(f"Error starting application: {e}")
         if "pyaudio" in str(e).lower():
             print("\nPyAudio installation may require portaudio on macOS.")
